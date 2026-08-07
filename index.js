@@ -22,7 +22,7 @@ function getCalendarClient() {
   return google.calendar({ version: "v3", auth });
 }
 
-async function agendarCita(sucursal, nombre, fecha, hora) {
+async function agendarCita(sucursal, nombre, fecha, hora, telefono) {
   const calendar = getCalendarClient();
   const calendarId = sucursal === "torres_adalid"
     ? CALENDARS.torres_adalid
@@ -33,13 +33,74 @@ async function agendarCita(sucursal, nombre, fecha, hora) {
 
   const evento = {
     summary: `Cita valoración - ${nombre}`,
-    description: `Paciente: ${nombre}\nSucursal: ${sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte"}`,
+    description: `Paciente: ${nombre}\nTeléfono: ${telefono}\nSucursal: ${sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte"}`,
     start: { dateTime: fechaInicio.toISOString(), timeZone: "America/Mexico_City" },
     end: { dateTime: fechaFin.toISOString(), timeZone: "America/Mexico_City" },
   };
 
   const res = await calendar.events.insert({ calendarId, requestBody: evento });
+
+  programarRecordatorios(nombre, fecha, hora, sucursal, telefono);
+
   return res.data;
+}
+
+async function enviarWhatsApp(telefono, mensaje) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to: telefono,
+      type: "text",
+      text: { body: mensaje },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.GRAPH_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+}
+
+function programarRecordatorios(nombre, fecha, hora, sucursal, telefono) {
+  const sucursalNombre = sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte";
+  const fechaCita = new Date(`${fecha}T${hora}:00-06:00`);
+
+  const recordatorio24h = new Date(fechaCita.getTime() - 24 * 60 * 60 * 1000);
+  const recordatorio2h = new Date(fechaCita.getTime() - 2 * 60 * 60 * 1000);
+
+  const ahora = new Date();
+
+  const msg24h = `Hola ${nombre}, te recordamos que mañana tienes tu cita de valoración a las ${hora} en nuestra sucursal ${sucursalNombre}. ¡Te esperamos! 😊`;
+  const msg2h = `Hola ${nombre}, tu cita de valoración es en 2 horas a las ${hora} en ${sucursalNombre}. ¡Te esperamos! 😊`;
+
+  const delay24h = recordatorio24h.getTime() - ahora.getTime();
+  const delay2h = recordatorio2h.getTime() - ahora.getTime();
+
+  if (delay24h > 0) {
+    setTimeout(async () => {
+      try {
+        await enviarWhatsApp(telefono, msg24h);
+        console.log(`Recordatorio 24h enviado a ${telefono}`);
+      } catch (err) {
+        console.error("Error recordatorio 24h:", err.message);
+      }
+    }, delay24h);
+    console.log(`Recordatorio 24h programado para ${recordatorio24h.toISOString()}`);
+  }
+
+  if (delay2h > 0) {
+    setTimeout(async () => {
+      try {
+        await enviarWhatsApp(telefono, msg2h);
+        console.log(`Recordatorio 2h enviado a ${telefono}`);
+      } catch (err) {
+        console.error("Error recordatorio 2h:", err.message);
+      }
+    }, delay2h);
+    console.log(`Recordatorio 2h programado para ${recordatorio2h.toISOString()}`);
+  }
 }
 
 const conversaciones = {};
@@ -134,7 +195,7 @@ REGLAS IMPORTANTES:
       try {
         const jsonStr = reply.split("AGENDAR:")[1].trim();
         const datos = JSON.parse(jsonStr);
-        await agendarCita(datos.sucursal, datos.nombre, datos.fecha, datos.hora);
+        await agendarCita(datos.sucursal, datos.nombre, datos.fecha, datos.hora, from);
         const sucursalNombre = datos.sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte";
         reply = `✅ ¡Listo ${datos.nombre}! Tu cita de valoración quedó agendada en la sucursal ${sucursalNombre} el ${datos.fecha} a las ${datos.hora}. ¡Te esperamos! 😊`;
       } catch (err) {
@@ -145,22 +206,7 @@ REGLAS IMPORTANTES:
 
     conversaciones[from].push({ role: "assistant", content: reply });
 
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: from,
-        type: "text",
-        text: { body: reply },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GRAPH_API_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
+    await enviarWhatsApp(from, reply);
     console.log(`Respuesta enviada a ${from}`);
   } catch (err) {
     console.error("Error:", err.message);
