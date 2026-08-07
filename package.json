@@ -8,6 +8,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "@anthropic-ai/sdk": "^0.24.0",
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "googleapis": "^140.0.0"
   }
 }
