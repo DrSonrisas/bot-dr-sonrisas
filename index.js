@@ -2,9 +2,16 @@ const express = require("express");
 const axios = require("axios");
 const Anthropic = require("@anthropic-ai/sdk");
 const { google } = require("googleapis");
+const { createServer } = require("http");
+const { Server } = require("socket.io");
+const path = require("path");
 
 const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer);
+
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -12,6 +19,9 @@ const CALENDARS = {
   torres_adalid: "citasprimeravez@gmail.com",
   division_del_norte: "citasprimeravezfim@gmail.com",
 };
+
+const conversaciones = {};
+const historialPanel = {};
 
 function getCalendarClient() {
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
@@ -39,9 +49,7 @@ async function agendarCita(sucursal, nombre, fecha, hora, telefono) {
   };
 
   const res = await calendar.events.insert({ calendarId, requestBody: evento });
-
   programarRecordatorios(nombre, fecha, hora, sucursal, telefono);
-
   return res.data;
 }
 
@@ -66,44 +74,50 @@ async function enviarWhatsApp(telefono, mensaje) {
 function programarRecordatorios(nombre, fecha, hora, sucursal, telefono) {
   const sucursalNombre = sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte";
   const fechaCita = new Date(`${fecha}T${hora}:00-06:00`);
-
-  const recordatorio24h = new Date(fechaCita.getTime() - 24 * 60 * 60 * 1000);
-  const recordatorio2h = new Date(fechaCita.getTime() - 2 * 60 * 60 * 1000);
-
   const ahora = new Date();
 
   const msg24h = `Hola ${nombre}, te recordamos que mañana tienes tu cita de valoración a las ${hora} en nuestra sucursal ${sucursalNombre}. ¡Te esperamos! 😊`;
   const msg2h = `Hola ${nombre}, tu cita de valoración es en 2 horas a las ${hora} en ${sucursalNombre}. ¡Te esperamos! 😊`;
 
-  const delay24h = recordatorio24h.getTime() - ahora.getTime();
-  const delay2h = recordatorio2h.getTime() - ahora.getTime();
+  const delay24h = fechaCita.getTime() - 24 * 60 * 60 * 1000 - ahora.getTime();
+  const delay2h = fechaCita.getTime() - 2 * 60 * 60 * 1000 - ahora.getTime();
 
   if (delay24h > 0) {
     setTimeout(async () => {
       try {
         await enviarWhatsApp(telefono, msg24h);
+        guardarMensajePanel(telefono, msg24h, "bot");
         console.log(`Recordatorio 24h enviado a ${telefono}`);
       } catch (err) {
         console.error("Error recordatorio 24h:", err.message);
       }
     }, delay24h);
-    console.log(`Recordatorio 24h programado para ${recordatorio24h.toISOString()}`);
   }
 
   if (delay2h > 0) {
     setTimeout(async () => {
       try {
         await enviarWhatsApp(telefono, msg2h);
+        guardarMensajePanel(telefono, msg2h, "bot");
         console.log(`Recordatorio 2h enviado a ${telefono}`);
       } catch (err) {
         console.error("Error recordatorio 2h:", err.message);
       }
     }, delay2h);
-    console.log(`Recordatorio 2h programado para ${recordatorio2h.toISOString()}`);
   }
 }
 
-const conversaciones = {};
+function guardarMensajePanel(telefono, texto, tipo) {
+  if (!historialPanel[telefono]) historialPanel[telefono] = [];
+  const mensaje = { texto, tipo, timestamp: Date.now(), leido: false };
+  historialPanel[telefono].push(mensaje);
+  io.emit("nuevo_mensaje", { telefono, mensaje });
+}
+
+io.on("connection", (socket) => {
+  console.log("Panel conectado");
+  socket.emit("historial", historialPanel);
+});
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -131,6 +145,8 @@ app.post("/webhook", async (req, res) => {
     const text = message.text.body;
 
     console.log(`Mensaje de ${from}: ${text}`);
+
+    guardarMensajePanel(from, text, "usuario");
 
     if (!conversaciones[from]) conversaciones[from] = [];
     conversaciones[from].push({ role: "user", content: text });
@@ -205,6 +221,7 @@ REGLAS IMPORTANTES:
     }
 
     conversaciones[from].push({ role: "assistant", content: reply });
+    guardarMensajePanel(from, reply, "bot");
 
     await enviarWhatsApp(from, reply);
     console.log(`Respuesta enviada a ${from}`);
@@ -214,4 +231,4 @@ REGLAS IMPORTANTES:
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor corriendo en puerto ${PORT}`));
+httpServer.listen(PORT, () => console.log(`Servidor corriendo en puerto ${PORT}`));
