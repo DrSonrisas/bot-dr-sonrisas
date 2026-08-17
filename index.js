@@ -20,6 +20,25 @@ const CALENDARS = {
   division_del_norte: "citasprimeravezfim@gmail.com",
 };
 
+// Horario de atención para citas
+const HORA_APERTURA = 10; // 10:00 am
+const HORA_CIERRE = 18; // 6:00 pm
+const DURACION_CITA_MIN = 60; // duración de cada cita en minutos
+
+// Valida que una hora "HH:MM" esté dentro del horario de atención
+// y que la cita (con su duración) no se pase de la hora de cierre.
+function horaDentroDeHorario(hora) {
+  if (!/^\d{2}:\d{2}$/.test(hora)) return false;
+  const [h, m] = hora.split(":").map(Number);
+  if (h < 0 || h > 23 || m < 0 || m > 59) return false;
+
+  const inicioMin = h * 60 + m;
+  const aperturaMin = HORA_APERTURA * 60;
+  const cierreMin = HORA_CIERRE * 60;
+
+  return inicioMin >= aperturaMin && inicioMin + DURACION_CITA_MIN <= cierreMin;
+}
+
 const conversaciones = {};
 const historialPanel = {};
 
@@ -194,6 +213,7 @@ Para una emergencia médica, favor de asistir a su sucursal donde está llevando
 AGENDAR CITAS:
 - Pregunta en qué sucursal prefiere: Torres Adalid o División del Norte
 - Luego pide: nombre completo, fecha (YYYY-MM-DD) y hora (HH:MM)
+- HORARIO DE CITAS: Solo se agendan citas de 10:00 am a 6:00 pm (18:00 hrs), de manera que la cita termine a más tardar a las 18:00. NUNCA ofrezcas ni aceptes un horario fuera de este rango (por ejemplo, no ofrezcas las 8:00, las 19:00, ni citas de madrugada). Si el paciente pide un horario fuera de este rango, explícale amablemente el horario disponible y pídele que elija otra hora dentro de 10:00-18:00.
 - Cuando tengas todos los datos, responde EXACTAMENTE en este formato JSON y nada más:
 AGENDAR:{"sucursal":"torres_adalid","nombre":"Nombre Apellido","fecha":"2024-01-15","hora":"10:00"}
 - Usa "torres_adalid" o "division_del_norte" como valor de sucursal
@@ -211,9 +231,15 @@ REGLAS IMPORTANTES:
       try {
         const jsonStr = reply.split("AGENDAR:")[1].trim();
         const datos = JSON.parse(jsonStr);
-        await agendarCita(datos.sucursal, datos.nombre, datos.fecha, datos.hora, from);
-        const sucursalNombre = datos.sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte";
-        reply = `✅ ¡Listo ${datos.nombre}! Tu cita de valoración quedó agendada en la sucursal ${sucursalNombre} el ${datos.fecha} a las ${datos.hora}. ¡Te esperamos! 😊`;
+
+        if (!horaDentroDeHorario(datos.hora)) {
+          // No se agenda: la hora solicitada cae fuera del horario de atención.
+          reply = `Lo siento, nuestro horario para citas de valoración es de ${HORA_APERTURA}:00 am a ${HORA_CIERRE}:00 (6:00 pm). ¿Podrías elegir otro horario dentro de ese rango?`;
+        } else {
+          await agendarCita(datos.sucursal, datos.nombre, datos.fecha, datos.hora, from);
+          const sucursalNombre = datos.sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte";
+          reply = `✅ ¡Listo ${datos.nombre}! Tu cita de valoración quedó agendada en la sucursal ${sucursalNombre} el ${datos.fecha} a las ${datos.hora}. ¡Te esperamos! 😊`;
+        }
       } catch (err) {
         console.error("Error agendando:", err.message);
         reply = "Hubo un problema al agendar tu cita. Por favor intenta de nuevo.";
