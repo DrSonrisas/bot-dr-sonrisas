@@ -39,6 +39,37 @@ function horaDentroDeHorario(hora) {
   return inicioMin >= aperturaMin && inicioMin + DURACION_CITA_MIN <= cierreMin;
 }
 
+// Devuelve la fecha/hora actual en la zona horaria de la clínica (CDMX),
+// tanto en formato ISO (YYYY-MM-DD) como en formato legible para el prompt.
+function obtenerFechaHoyCDMX() {
+  const ahora = new Date();
+  const iso = ahora.toLocaleDateString("sv-SE", { timeZone: "America/Mexico_City" }); // "YYYY-MM-DD"
+  const legible = ahora.toLocaleDateString("es-MX", {
+    timeZone: "America/Mexico_City",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  return { iso, legible };
+}
+
+// Rechaza fechas que ya pasaron (comparando contra "hoy" en CDMX),
+// como red de seguridad por si el modelo se equivoca de año.
+function fechaEsFutura(fecha) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return false;
+  const { iso: hoyISO } = obtenerFechaHoyCDMX();
+  return fecha >= hoyISO; // comparación de strings YYYY-MM-DD es válida cronológicamente
+}
+
+// Días en los que la clínica no agenda citas (vacaciones, días festivos, etc.).
+// Agrega o quita fechas aquí en formato "YYYY-MM-DD" según se necesite.
+const FECHAS_BLOQUEADAS = ["2026-09-15", "2026-09-16", "2026-09-24"];
+
+function fechaBloqueada(fecha) {
+  return FECHAS_BLOQUEADAS.includes(fecha);
+}
+
 const conversaciones = {};
 const historialPanel = {};
 
@@ -51,20 +82,50 @@ function getCalendarClient() {
   return google.calendar({ version: "v3", auth });
 }
 
-async function agendarCita(sucursal, nombre, fecha, hora, telefono) {
+function calendarIdDeSucursal(sucursal) {
+  return sucursal === "torres_adalid" ? CALENDARS.torres_adalid : CALENDARS.division_del_norte;
+}
+
+// Color amarillo ("Banana") para los eventos creados por el bot.
+// colorId de Google Calendar: 1 Lavanda, 2 Salvia, 3 Uva, 4 Flamenco, 5 Plátano (amarillo),
+// 6 Mandarina, 7 Pavo real, 8 Grafito, 9 Arándano, 10 Albahaca, 11 Tomate.
+const COLOR_ID_AMARILLO = "5";
+
+// Revisa en Google Calendar (vía freebusy) si el calendario de la sucursal
+// ya tiene algo agendado en ese rango de tiempo.
+async function horarioOcupado(sucursal, fecha, hora) {
   const calendar = getCalendarClient();
-  const calendarId = sucursal === "torres_adalid"
-    ? CALENDARS.torres_adalid
-    : CALENDARS.division_del_norte;
+  const calendarId = calendarIdDeSucursal(sucursal);
 
   const fechaInicio = new Date(`${fecha}T${hora}:00-06:00`);
-  const fechaFin = new Date(fechaInicio.getTime() + 60 * 60 * 1000);
+  const fechaFin = new Date(fechaInicio.getTime() + DURACION_CITA_MIN * 60 * 1000);
+
+  const res = await calendar.freebusy.query({
+    requestBody: {
+      timeMin: fechaInicio.toISOString(),
+      timeMax: fechaFin.toISOString(),
+      timeZone: "America/Mexico_City",
+      items: [{ id: calendarId }],
+    },
+  });
+
+  const ocupado = res.data.calendars?.[calendarId]?.busy || [];
+  return ocupado.length > 0;
+}
+
+async function agendarCita(sucursal, nombre, fecha, hora, telefono) {
+  const calendar = getCalendarClient();
+  const calendarId = calendarIdDeSucursal(sucursal);
+
+  const fechaInicio = new Date(`${fecha}T${hora}:00-06:00`);
+  const fechaFin = new Date(fechaInicio.getTime() + DURACION_CITA_MIN * 60 * 1000);
 
   const evento = {
     summary: `Cita valoración - ${nombre}`,
     description: `Paciente: ${nombre}\nTeléfono: ${telefono}\nSucursal: ${sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte"}`,
     start: { dateTime: fechaInicio.toISOString(), timeZone: "America/Mexico_City" },
     end: { dateTime: fechaFin.toISOString(), timeZone: "America/Mexico_City" },
+    colorId: COLOR_ID_AMARILLO,
   };
 
   const res = await calendar.events.insert({ calendarId, requestBody: evento });
@@ -174,10 +235,20 @@ app.post("/webhook", async (req, res) => {
       conversaciones[from] = conversaciones[from].slice(-20);
     }
 
+    const { iso: fechaHoyISO, legible: fechaHoyLegible } = obtenerFechaHoyCDMX();
+    // Un ejemplo de fecha futura (7 días adelante) solo para mostrar el formato,
+    // así el modelo nunca copia un año fijo/desactualizado del prompt.
+    const fechaEjemplo = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+      .toLocaleDateString("sv-SE", { timeZone: "America/Mexico_City" });
+
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
       system: `Eres el Dr. Salvador Delgado de la clínica Dr. Sonrisas.
+
+FECHA Y HORA ACTUAL: Hoy es ${fechaHoyLegible} (${fechaHoyISO}), zona horaria Ciudad de México. Usa SIEMPRE esta fecha como referencia real para interpretar "hoy", "mañana", "el próximo lunes", etc. Si el paciente no menciona el año, asume el año actual (o el siguiente si esa fecha ya pasó este año). NUNCA agendes ni ofrezcas una fecha anterior a hoy.
+
+DÍAS SIN CITAS: La clínica NO agenda citas los siguientes días: ${FECHAS_BLOQUEADAS.join(", ")}. Si el paciente pide una cita en alguno de esos días, explícale que ese día no hay citas disponibles y pídele que elija otra fecha.
 
 MENSAJE DE BIENVENIDA (úsalo solo al iniciar la conversación):
 "Hola, Soy el Dr. Salvador Delgado. Me da mucho gusto leerte, ¿en qué te puedo ayudar?"
@@ -214,8 +285,9 @@ AGENDAR CITAS:
 - Pregunta en qué sucursal prefiere: Torres Adalid o División del Norte
 - Luego pide: nombre completo, fecha (YYYY-MM-DD) y hora (HH:MM)
 - HORARIO DE CITAS: Solo se agendan citas de 10:00 am a 6:00 pm (18:00 hrs), de manera que la cita termine a más tardar a las 18:00. NUNCA ofrezcas ni aceptes un horario fuera de este rango (por ejemplo, no ofrezcas las 8:00, las 19:00, ni citas de madrugada). Si el paciente pide un horario fuera de este rango, explícale amablemente el horario disponible y pídele que elija otra hora dentro de 10:00-18:00.
-- Cuando tengas todos los datos, responde EXACTAMENTE en este formato JSON y nada más:
-AGENDAR:{"sucursal":"torres_adalid","nombre":"Nombre Apellido","fecha":"2024-01-15","hora":"10:00"}
+- DISPONIBILIDAD: El sistema revisa automáticamente si el horario solicitado ya está ocupado en el calendario de esa sucursal. Si te llega un aviso de que el horario ya está ocupado, pídele amablemente al paciente otra fecha y/o hora.
+- Cuando tengas todos los datos, responde EXACTAMENTE en este formato JSON y nada más (el valor de "fecha" es solo un ejemplo de formato, siempre usa la fecha real que te dio el paciente con el año correcto):
+AGENDAR:{"sucursal":"torres_adalid","nombre":"Nombre Apellido","fecha":"${fechaEjemplo}","hora":"10:00"}
 - Usa "torres_adalid" o "division_del_norte" como valor de sucursal
 
 REGLAS IMPORTANTES:
@@ -232,9 +304,19 @@ REGLAS IMPORTANTES:
         const jsonStr = reply.split("AGENDAR:")[1].trim();
         const datos = JSON.parse(jsonStr);
 
-        if (!horaDentroDeHorario(datos.hora)) {
+        if (!fechaEsFutura(datos.fecha)) {
+          // No se agenda: la fecha ya pasó (o el modelo puso un año incorrecto).
+          const { legible } = obtenerFechaHoyCDMX();
+          reply = `Esa fecha ya pasó (hoy es ${legible}). ¿Podrías darme una fecha a partir de hoy?`;
+        } else if (fechaBloqueada(datos.fecha)) {
+          // No se agenda: es un día bloqueado (sin citas disponibles).
+          reply = `Lo siento, el ${datos.fecha} no tenemos citas disponibles. ¿Podrías elegir otra fecha?`;
+        } else if (!horaDentroDeHorario(datos.hora)) {
           // No se agenda: la hora solicitada cae fuera del horario de atención.
           reply = `Lo siento, nuestro horario para citas de valoración es de ${HORA_APERTURA}:00 am a ${HORA_CIERRE}:00 (6:00 pm). ¿Podrías elegir otro horario dentro de ese rango?`;
+        } else if (await horarioOcupado(datos.sucursal, datos.fecha, datos.hora)) {
+          // No se agenda: ya hay otra cita en ese horario en esa sucursal.
+          reply = `Ese horario ya está ocupado en esa sucursal. ¿Podrías elegir otra hora u otro día?`;
         } else {
           await agendarCita(datos.sucursal, datos.nombre, datos.fecha, datos.hora, from);
           const sucursalNombre = datos.sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte";
