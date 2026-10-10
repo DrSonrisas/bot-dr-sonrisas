@@ -20,23 +20,51 @@ const CALENDARS = {
   division_del_norte: "citasprimeravezfim@gmail.com",
 };
 
-// Horario de atención para citas
-const HORA_APERTURA = 10; // 10:00 am
-const HORA_CIERRE = 18; // 6:00 pm
+// Horario de atención para citas, por día de la semana.
+// 0 = domingo, 1 = lunes, ... 6 = sábado. null = no hay citas ese día.
+const HORARIOS = {
+  0: null, // domingo: cerrado
+  1: { apertura: 10, cierre: 18 },
+  2: { apertura: 10, cierre: 18 },
+  3: { apertura: 10, cierre: 18 },
+  4: { apertura: 10, cierre: 18 },
+  5: { apertura: 10, cierre: 18 },
+  6: { apertura: 10, cierre: 14 }, // sábado: 10:00 a 14:00
+};
 const DURACION_CITA_MIN = 60; // duración de cada cita en minutos
 
-// Valida que una hora "HH:MM" esté dentro del horario de atención
+const NOMBRES_DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+// Día de la semana (0-6) de una fecha "YYYY-MM-DD" en CDMX.
+function diaDeLaSemana(fecha) {
+  return new Date(`${fecha}T12:00:00-06:00`).getUTCDay();
+}
+
+function horarioDelDia(fecha) {
+  return HORARIOS[diaDeLaSemana(fecha)];
+}
+
+// Texto legible del horario, para el prompt y los mensajes al paciente.
+function describirHorarios() {
+  return "lunes a viernes de 10:00 a 18:00 hrs, sábados de 10:00 a 14:00 hrs; domingos no hay citas";
+}
+
+// Valida que una hora "HH:MM" esté dentro del horario de atención de ESE día
 // y que la cita (con su duración) no se pase de la hora de cierre.
-function horaDentroDeHorario(hora) {
+function horaDentroDeHorario(fecha, hora) {
+  const horario = horarioDelDia(fecha);
+  if (!horario) return false;
   if (!/^\d{2}:\d{2}$/.test(hora)) return false;
   const [h, m] = hora.split(":").map(Number);
   if (h < 0 || h > 23 || m < 0 || m > 59) return false;
 
   const inicioMin = h * 60 + m;
-  const aperturaMin = HORA_APERTURA * 60;
-  const cierreMin = HORA_CIERRE * 60;
+  return inicioMin >= horario.apertura * 60 && inicioMin + DURACION_CITA_MIN <= horario.cierre * 60;
+}
 
-  return inicioMin >= aperturaMin && inicioMin + DURACION_CITA_MIN <= cierreMin;
+// true si la fecha/hora de la cita ya pasó (p. ej. "hoy a las 10:00" cuando ya son las 16:00).
+function horaYaPaso(fecha, hora) {
+  return new Date(`${fecha}T${hora}:00-06:00`).getTime() <= Date.now();
 }
 
 // Devuelve la fecha/hora actual en la zona horaria de la clínica (CDMX),
@@ -293,7 +321,7 @@ Para una emergencia médica, favor de asistir a su sucursal donde está llevando
 AGENDAR CITAS:
 - Todas las citas son en la sucursal Torres Adalid (es la única sucursal disponible actualmente). No preguntes por otra sucursal ni la ofrezcas.
 - Pide: nombre completo, fecha (YYYY-MM-DD) y hora (HH:MM)
-- HORARIO DE CITAS: Solo se agendan citas de 10:00 am a 6:00 pm (18:00 hrs), de manera que la cita termine a más tardar a las 18:00. NUNCA ofrezcas ni aceptes un horario fuera de este rango (por ejemplo, no ofrezcas las 8:00, las 19:00, ni citas de madrugada). Si el paciente pide un horario fuera de este rango, explícale amablemente el horario disponible y pídele que elija otra hora dentro de 10:00-18:00.
+- HORARIO DE CITAS: Lunes a viernes de 10:00 a 18:00 hrs (última cita a las 17:00). Sábados de 10:00 a 14:00 hrs (última cita a las 13:00). Domingos NO hay citas. Cada cita dura 1 hora y debe terminar a más tardar a la hora de cierre de ese día. NUNCA ofrezcas ni aceptes un día u horario fuera de este rango (por ejemplo, no ofrezcas domingos, ni un sábado a las 15:00, ni las 8:00 o las 19:00). Antes de confirmar, verifica qué día de la semana es la fecha que pide el paciente. Si pide un día u horario fuera de servicio, explícale amablemente el horario disponible y pídele que elija otro.
 - DISPONIBILIDAD: El sistema revisa automáticamente si el horario solicitado ya está ocupado en el calendario de esa sucursal. Si te llega un aviso de que el horario ya está ocupado, pídele amablemente al paciente otra fecha y/o hora.
 - Cuando tengas todos los datos, responde EXACTAMENTE en este formato JSON y nada más (el valor de "fecha" es solo un ejemplo de formato, siempre usa la fecha real que te dio el paciente con el año correcto):
 AGENDAR:{"sucursal":"torres_adalid","nombre":"Nombre Apellido","fecha":"${fechaEjemplo}","hora":"10:00"}
@@ -320,9 +348,18 @@ REGLAS IMPORTANTES:
         } else if (fechaBloqueada(datos.fecha)) {
           // No se agenda: es un día bloqueado (sin citas disponibles).
           reply = `Lo siento, el ${datos.fecha} no tenemos citas disponibles. ¿Podrías elegir otra fecha?`;
-        } else if (!horaDentroDeHorario(datos.hora)) {
-          // No se agenda: la hora solicitada cae fuera del horario de atención.
-          reply = `Lo siento, nuestro horario para citas de valoración es de ${HORA_APERTURA}:00 am a ${HORA_CIERRE}:00 (6:00 pm). ¿Podrías elegir otro horario dentro de ese rango?`;
+        } else if (!horarioDelDia(datos.fecha)) {
+          // No se agenda: ese día de la semana no hay servicio (domingo).
+          const dia = NOMBRES_DIAS[diaDeLaSemana(datos.fecha)];
+          reply = `Lo siento, los ${dia}s no damos consultas. Nuestro horario es ${describirHorarios()}. ¿Podrías elegir otro día?`;
+        } else if (!horaDentroDeHorario(datos.fecha, datos.hora)) {
+          // No se agenda: la hora cae fuera del horario de atención de ese día.
+          const { apertura, cierre } = horarioDelDia(datos.fecha);
+          const dia = NOMBRES_DIAS[diaDeLaSemana(datos.fecha)];
+          reply = `Lo siento, los ${dia}s nuestro horario para citas de valoración es de ${apertura}:00 a ${cierre}:00 hrs (la última cita es a las ${cierre - 1}:00). ¿Podrías elegir otro horario dentro de ese rango?`;
+        } else if (horaYaPaso(datos.fecha, datos.hora)) {
+          // No se agenda: es para hoy pero esa hora ya pasó.
+          reply = `Esa hora ya pasó. ¿Podrías elegir un horario más tarde o en otro día?`;
         } else if (await horarioOcupado(datos.sucursal, datos.fecha, datos.hora)) {
           // No se agenda: ya hay otra cita en ese horario en esa sucursal.
           reply = `Ese horario ya está ocupado en esa sucursal. ¿Podrías elegir otra hora u otro día?`;
