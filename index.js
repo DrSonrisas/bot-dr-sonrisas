@@ -110,8 +110,9 @@ function getCalendarClient() {
   return google.calendar({ version: "v3", auth });
 }
 
+// Todas las citas se agendan únicamente en el calendario citasprimeravez@gmail.com.
 function calendarIdDeSucursal(sucursal) {
-  return sucursal === "torres_adalid" ? CALENDARS.torres_adalid : CALENDARS.division_del_norte;
+  return CALENDARS.torres_adalid;
 }
 
 // Color amarillo ("Banana") para los eventos creados por el bot.
@@ -340,6 +341,8 @@ REGLAS IMPORTANTES:
       try {
         const jsonStr = reply.split("AGENDAR:")[1].trim();
         const datos = JSON.parse(jsonStr);
+        // Todas las citas van a Torres Adalid (citasprimeravez@gmail.com), sin importar lo que mande el modelo.
+        datos.sucursal = "torres_adalid";
 
         if (!fechaEsFutura(datos.fecha)) {
           // No se agenda: la fecha ya pasó (o el modelo puso un año incorrecto).
