@@ -115,10 +115,10 @@ function calendarIdDeSucursal(sucursal) {
   return CALENDARS.torres_adalid;
 }
 
-// Color amarillo ("Banana") para los eventos creados por el bot.
+// Color verde albahaca ("Basil") para los eventos creados por el bot.
 // colorId de Google Calendar: 1 Lavanda, 2 Salvia, 3 Uva, 4 Flamenco, 5 Plátano (amarillo),
 // 6 Mandarina, 7 Pavo real, 8 Grafito, 9 Arándano, 10 Albahaca, 11 Tomate.
-const COLOR_ID_AMARILLO = "5";
+const COLOR_ID_EVENTO = "10";
 
 // Revisa en Google Calendar (vía freebusy) si el calendario de la sucursal
 // ya tiene algo agendado en ese rango de tiempo.
@@ -154,7 +154,7 @@ async function agendarCita(sucursal, nombre, fecha, hora, telefono) {
     description: `Paciente: ${nombre}\nTeléfono: ${telefono}\nSucursal: ${sucursal === "torres_adalid" ? "Torres Adalid" : "División del Norte"}`,
     start: { dateTime: fechaInicio.toISOString(), timeZone: "America/Mexico_City" },
     end: { dateTime: fechaFin.toISOString(), timeZone: "America/Mexico_City" },
-    colorId: COLOR_ID_AMARILLO,
+    colorId: COLOR_ID_EVENTO,
   };
 
   const res = await calendar.events.insert({ calendarId, requestBody: evento });
